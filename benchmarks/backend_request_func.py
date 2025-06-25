@@ -41,12 +41,14 @@ class RequestFuncOutput:
     generated_text: str = ""
     success: bool = False
     latency: float = 0.0
+    reasoning_tokens: int = 0
     output_tokens: int = 0
     ttft: float = 0.0  # Time to first token
     itl: list[float] = field(default_factory=list)  # list of inter-token latencies
     tpot: float = 0.0  # avg next-token latencies
     prompt_len: int = 0
     error: str = ""
+    think_text: str = ""
 
 
 async def async_request_tgi(
@@ -286,7 +288,6 @@ async def async_request_openai_completions(
 
         output = RequestFuncOutput()
         output.prompt_len = request_func_input.prompt_len
-
         generated_text = ""
         st = time.perf_counter()
         most_recent_timestamp = st
@@ -362,9 +363,10 @@ async def async_request_openai_chat_completions(
     async with aiohttp.ClientSession(
         trust_env=True, timeout=AIOHTTP_TIMEOUT
     ) as session:
-        content = [{"type": "text", "text": request_func_input.prompt}]
-        if request_func_input.multi_modal_content:
-            content.append(request_func_input.multi_modal_content)
+        # content = [{"type": "text", "text": request_func_input.prompt}]
+        # if request_func_input.multi_modal_content:
+        #     content.append(request_func_input.multi_modal_content)
+        content = request_func_input.prompt
         payload = {
             "model": request_func_input.model_name
             if request_func_input.model_name
@@ -372,7 +374,8 @@ async def async_request_openai_chat_completions(
             "messages": [
                 {"role": "user", "content": content},
             ],
-            "temperature": 0.0,
+            "repetition_penalty": 1.05,
+            "temperature": 0.2,
             "max_completion_tokens": request_func_input.output_len,
             "stream": True,
             "stream_options": {
@@ -387,11 +390,11 @@ async def async_request_openai_chat_completions(
             "Content-Type": "application/json",
             "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}",
         }
-
         output = RequestFuncOutput()
         output.prompt_len = request_func_input.prompt_len
 
         generated_text = ""
+        think_text = ""
         ttft = 0.0
         st = time.perf_counter()
         most_recent_timestamp = st
@@ -418,6 +421,7 @@ async def async_request_openai_chat_completions(
 
                             if choices := data.get("choices"):
                                 content = choices[0]["delta"].get("content")
+                                think_content = choices[0]["delta"].get("reasoning_content","")
                                 # First token
                                 if ttft == 0.0:
                                     ttft = timestamp - st
@@ -428,12 +432,13 @@ async def async_request_openai_chat_completions(
                                     output.itl.append(timestamp - most_recent_timestamp)
 
                                 generated_text += content or ""
+                                think_text += think_content or ""
                             elif usage := data.get("usage"):
                                 output.output_tokens = usage.get("completion_tokens")
 
                             most_recent_timestamp = timestamp
-
                     output.generated_text = generated_text
+                    output.think_text = think_text
                     output.success = True
                     output.latency = most_recent_timestamp - st
                 else:

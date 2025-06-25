@@ -32,7 +32,7 @@ import uuid
 import warnings
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Any
 
 import datasets
 import numpy as np
@@ -56,9 +56,8 @@ try:
 except ImportError:
     from argparse import ArgumentParser as FlexibleArgumentParser
 
-from vllm.v1.structured_output.backend_xgrammar import (
-    has_xgrammar_unsupported_json_features,
-)
+# from vllm.v1.structured_output.utils import (
+#     has_xgrammar_unsupported_json_features)
 
 MILLISECONDS_TO_SECONDS_CONVERSION = 1000
 
@@ -68,6 +67,7 @@ class BenchmarkMetrics:
     completed: int
     total_input: int
     total_output: int
+    total_reasoning_tokens: int
     request_throughput: float
     request_goodput: float
     output_throughput: float
@@ -224,16 +224,17 @@ def sample_requests(
 
     elif args.dataset == "xgrammar_bench":
         requests: list[SampleRequest] = []
-        dataset = datasets.load_dataset("NousResearch/json-mode-eval", split="train")
+        dataset = datasets.load_dataset("squeezebits/augmented-json-mode-eval", split="train")
+        # dataset = datasets.load_dataset("NousResearch/json-mode-eval", split="train")
+        
         full_dataset_len = len(dataset)
 
-        def _filter_func(item):
-            import json
+        # def _filter_func(item):
+        #     import json
+        #     schema = json.loads(item["schema"])
+        #     return not has_xgrammar_unsupported_json_features(schema)
 
-            schema = json.loads(item["schema"])
-            return not has_xgrammar_unsupported_json_features(schema)
-
-        dataset = dataset.filter(_filter_func)
+        # dataset = dataset.filter(_filter_func)
         num_filtered_out = full_dataset_len - len(dataset)
         print(
             f"dataset has {len(dataset)} entries after filtering "
@@ -245,8 +246,10 @@ def sample_requests(
             while idx >= len_dataset:
                 idx -= len_dataset
             schema = dataset["schema"][idx]
+
             prompt = tokenizer.apply_chat_template(
-                dataset["prompt"][idx], tokenize=False, add_generation_prompt=True
+                dataset["prompt"][idx], tokenize=False, add_generation_prompt=True,
+                enable_thinking=args.reasoning
             )
             input_len = len(tokenizer(prompt).input_ids)
             completion = dataset["completion"][idx]
@@ -320,6 +323,7 @@ def calculate_metrics(
     goodput_config_dict: Optional[dict[str, float]] = None,
 ) -> tuple[BenchmarkMetrics, list[int]]:
     actual_output_lens: list[int] = []
+    reasoning_token_lens: list[int] = []
     total_input = 0
     completed = 0
     good_completed = 0
@@ -335,9 +339,20 @@ def calculate_metrics(
             # multiple output tokens may be bundled together
             # Note : this may inflate the output token count slightly
             output_len = len(
-                tokenizer(outputs[i].generated_text, add_special_tokens=False).input_ids
+                tokenizer(outputs[i].generated_text,
+                          add_special_tokens=False).input_ids)
+            output_len = max(
+                len(outputs[i].itl),
+                len(tokenizer(outputs[i].generated_text,add_special_tokens=False).input_ids) + len(tokenizer(outputs[i].think_text,add_special_tokens=False).input_ids)
             )
             actual_output_lens.append(output_len)
+
+
+            reasoning_token_len = len(
+                tokenizer(outputs[i].think_text,
+                          add_special_tokens=False).input_ids)
+            reasoning_token_lens.append(reasoning_token_len)
+
             total_input += input_requests[i].prompt_len
             tpot = 0
             if output_len > 1:
@@ -389,6 +404,7 @@ def calculate_metrics(
         completed=completed,
         total_input=total_input,
         total_output=sum(actual_output_lens),
+        total_reasoning_tokens=sum(reasoning_token_lens),
         request_throughput=completed / dur_s,
         request_goodput=good_completed / dur_s,
         output_throughput=sum(actual_output_lens) / dur_s,
@@ -440,6 +456,9 @@ async def benchmark(
     max_concurrency: Optional[int],
     structured_output_ratio: float,
     goodput_config_dict: Optional[dict[str, float]] = None,
+    target_engine_type: str = "vllm",
+    reasoning: bool = True,
+    guided: bool = True,
 ):
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[backend]
@@ -448,8 +467,30 @@ async def benchmark(
 
     def prepare_extra_body(request) -> dict:
         extra_body = {}
-        # Add the schema to the extra_body
-        extra_body[request.structure_type] = request.schema
+        if target_engine_type == "vllm":
+            # Add the schema to the extra_body
+            if guided:
+                extra_body[request.structure_type] = request.schema
+            extra_body["chat_template_kwargs"] = {"enable_thinking": reasoning} # for qwen3
+            pass
+        elif target_engine_type == "sglang":
+            if guided:
+                assert request.structure_type == "guided_json", "For now, only guided_json is supported"
+                extra_body["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "foo",
+                        "schema": json.loads(request.schema),
+                    }
+                }
+            extra_body["chat_template_kwargs"] = {"enable_thinking": reasoning} # for qwen3
+        elif target_engine_type == "trtllm-triton":
+            if guided:
+                assert request.structure_type == "guided_json", "For now, only guided_json is supported"
+                extra_body["guided_decoding_guide_type"] = "json_schema"
+                extra_body["guided_decoding_guide"] = request.schema
+        else:
+            raise ValueError(f"Unknown target engine type: {target_engine_type}")
         return extra_body
 
     print("Starting initial single prompt test run...")
@@ -457,13 +498,15 @@ async def benchmark(
         range(len(input_requests)), int(len(input_requests) * structured_output_ratio)
     )
 
-    test_request = input_requests[0]
+    test_request = input_requests[-1]
     test_req_extra_body = (
         prepare_extra_body(test_request) if 0 in structured_output_req_idx else None
     )
+    print("test_request.prompt", test_request.prompt)
+    print("test_req_extra_body", test_req_extra_body)
     test_input = RequestFuncInput(
         model=model_id,
-        prompt=test_request.prompt,
+        prompt="hello"+ test_request.prompt,
         api_url=api_url,
         prompt_len=test_request.prompt_len,
         output_len=test_request.expected_output_len,
@@ -599,6 +642,7 @@ async def benchmark(
         "completed": metrics.completed,
         "total_input_tokens": metrics.total_input,
         "total_output_tokens": metrics.total_output,
+        "total_reasoning_tokens": metrics.total_reasoning_tokens,
         "request_throughput": metrics.request_throughput,
         "output_throughput": metrics.output_throughput,
         "total_token_throughput": metrics.total_token_throughput,
@@ -611,14 +655,16 @@ async def benchmark(
         "input_lens": [output.prompt_len for output in outputs],
         "output_lens": actual_output_lens,
         "ttfts": [output.ttft for output in outputs],
+        "tpots": [output.tpot for output in outputs],
         "itls": [output.itl for output in outputs],
         "errors": [output.error for output in outputs],
     }
 
-    ret = [
-        {"generated": output.generated_text, "expected": gt}
-        for output, gt in zip(outputs, expected)
-    ]
+    ret = [{
+        'thinking': output.think_text,
+        'generated': output.generated_text,
+        'expected': gt
+    } for output, gt in zip(outputs, expected)]
 
     def process_one_metric(
         # E.g., "ttft"
@@ -820,8 +866,10 @@ def main(args: argparse.Namespace):
             max_concurrency=args.max_concurrency,
             structured_output_ratio=args.structured_output_ratio,
             goodput_config_dict=goodput_config_dict,
-        )
-    )
+            target_engine_type=args.target_engine_type,
+            reasoning=bool(args.reasoning),
+            guided=bool(args.guided),
+        ))
 
     # Save config and results to json
     score = evaluate(ret, args)
@@ -1033,7 +1081,28 @@ def create_argument_parser():
         default=1.0,
         help="Ratio of Structured Outputs requests",
     )
+    
+    parser.add_argument(
+        "--target-engine-type",
+        type=str,
+        choices=["vllm", "trtllm-triton", "sglang"],
+        default="vllm",
+        help="Target engine type to benchmark against"
+    )
 
+    parser.add_argument(
+        "--reasoning",
+        type=int,
+        default=0,
+        help="Whether to use reasoning or not.",
+    )
+
+    parser.add_argument(
+        "--guided",
+        type=int,
+        default=1,
+        help="Whether to use guided decoding or not.",
+    )
     return parser
 
 
