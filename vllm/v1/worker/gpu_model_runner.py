@@ -1083,6 +1083,44 @@ class GPUModelRunner(LoRAModelRunnerMixin):
     def get_model(self) -> nn.Module:
         return self.model
 
+    def apply_reasoning_bitmask(
+        self,
+        scheduler_output: "SchedulerOutput",
+        logits: torch.Tensor,
+    ):
+        """
+        Apply reasoning bitmask to prevent ending thinking too early.
+        
+        If a request's output length is less than the reasoning budget,
+        set the logit of the end of think token to -inf to force continued reasoning.
+        """
+        if scheduler_output.reasoning_budget < 0 or scheduler_output.think_end_token_id is None:
+            return
+
+        think_end_token_id = scheduler_output.think_end_token_id
+
+        # Get the batch indices and check output lengths
+        for i, req_id in enumerate(self.input_batch.req_ids):
+            req_state = self.requests[req_id]
+            
+            # Calculate current output length (excluding prompt tokens)
+            output_length = len(req_state.output_token_ids)
+
+            # case 1:If output length is less than reasoning budget, suppress end of think token
+            if output_length < scheduler_output.reasoning_budget:
+                logits[i, think_end_token_id] = float('-inf')
+                logits[i, 151645] = float('-inf') # EOS token
+
+            # case 2: If output length is equal to reasoning budget, set the logit of the end of think token to the original value
+            elif output_length <= scheduler_output.reasoning_budget:
+                logits[i, :].fill_(float("-inf"))
+                logits[i, think_end_token_id] = 1.0
+
+            
+            elif think_end_token_id in req_state.output_token_ids[scheduler_output.reasoning_budget+1:]:
+                logger.info(f"option 3: req {req_id} {req_state.output_token_ids[scheduler_output.reasoning_budget+1:]}")
+
+
     def apply_grammar_bitmask(
         self,
         scheduler_output: "SchedulerOutput",
@@ -1398,6 +1436,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Apply structured output bitmasks if present
         if scheduler_output.grammar_bitmask is not None:
             self.apply_grammar_bitmask(scheduler_output, logits)
+
+        if scheduler_output.reasoning_budget > 0:
+            self.apply_reasoning_bitmask(scheduler_output, logits)
 
         # Sample the next token and get logprobs if needed.
         sampling_metadata = self.input_batch.sampling_metadata

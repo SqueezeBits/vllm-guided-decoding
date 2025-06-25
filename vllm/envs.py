@@ -134,6 +134,7 @@ if TYPE_CHECKING:
     VLLM_KV_CACHE_LAYOUT: Optional[str] = None
     VLLM_COMPUTE_NANS_IN_LOGITS: bool = False
 
+    REASONING_BUDGET: int = -1
 
 def get_default_cache_root():
     return os.getenv(
@@ -918,6 +919,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # or bad hardware but it may add compute overhead.
     "VLLM_COMPUTE_NANS_IN_LOGITS":
     lambda: bool(int(os.getenv("VLLM_COMPUTE_NANS_IN_LOGITS", "0"))),
+    # Control the reasoning budget for the vLLM server.
+    "REASONING_BUDGET":
+    lambda: int(os.getenv("REASONING_BUDGET", "0")),
 }
 
 # --8<-- [end:env-vars-definition]

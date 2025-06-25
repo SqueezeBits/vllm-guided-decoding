@@ -33,7 +33,8 @@ from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
-
+from vllm.envs import REASONING_BUDGET
+from vllm.reasoning.qwen3_reasoning_parser import Qwen3ReasoningParser
 logger = init_logger(__name__)
 
 
@@ -581,6 +582,12 @@ class Scheduler(SchedulerInterface):
             free_encoder_input_ids=self.encoder_cache_manager.get_freed_ids(),
             structured_output_request_ids=structured_output_request_ids,
             grammar_bitmask=grammar_bitmask,
+            reasoning_budget=REASONING_BUDGET,
+            think_end_token_id=(
+                self.structured_output_manager.reasoner.think_end_token_id 
+                if isinstance(self.structured_output_manager.reasoner, Qwen3ReasoningParser) 
+                else None
+            ),
         )
 
         # NOTE(Kuntai): this function is designed for multiple purposes:
