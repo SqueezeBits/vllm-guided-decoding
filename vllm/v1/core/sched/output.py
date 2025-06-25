@@ -156,7 +156,7 @@ class SchedulerOutput:
     # KV Cache Connector metadata.
     kv_connector_metadata: Optional[KVConnectorMetadata] = None
 
-    # Reasoning budget for the batch
-    reasoning_budget: int = -1
-    # Reasoning end token id
-    think_end_token_id: Optional[int] = None
+    # # Reasoning budget for the batch
+    # reasoning_budget: int = -1
+    # # Reasoning end token id
+    # think_end_token_id: Optional[int] = None

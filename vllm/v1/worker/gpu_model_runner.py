@@ -1091,35 +1091,63 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         """
         Apply reasoning bitmask to prevent ending thinking too early.
         
-        If a request's output length is less than the reasoning budget,
-        set the logit of the end of think token to -inf to force continued reasoning.
+        Performance-optimized with adaptive strategy based on batch characteristics.
         """
-        if scheduler_output.reasoning_budget < 0 or scheduler_output.think_end_token_id is None:
+        # Constants
+        REASONING_BUDGET = 301
+        THINK_END_TOKEN = 151668
+        SUPPRESS_TOKENS = [151668, 151645, 151643]  # think_end, eos, stop
+        
+        # Early return if no requests
+        if not self.input_batch.req_ids:
             return
-
-        think_end_token_id = scheduler_output.think_end_token_id
-
-        # Get the batch indices and check output lengths
+        
+        # Collect indices efficiently in single pass
+        under_budget_indices = []
+        at_budget_indices = []
+        
         for i, req_id in enumerate(self.input_batch.req_ids):
-            req_state = self.requests[req_id]
+            output_length = len(self.requests[req_id].output_token_ids)
+            if output_length < REASONING_BUDGET:
+                under_budget_indices.append(i)
+            elif output_length == REASONING_BUDGET:
+                at_budget_indices.append(i)
+        
+        # Early return if no modifications needed
+        if not under_budget_indices and not at_budget_indices:
+            return
+        
+        # Choose strategy based on batch characteristics
+        total_modifications = len(under_budget_indices) + len(at_budget_indices)
+        
+        # For small modifications, use direct indexing (lowest overhead)
+        if total_modifications <= 4:
+            # Direct indexing - fastest for small batches
+            for i in under_budget_indices:
+                logits[i, SUPPRESS_TOKENS] = float('-inf')
             
-            # Calculate current output length (excluding prompt tokens)
-            output_length = len(req_state.output_token_ids)
-
-            # case 1:If output length is less than reasoning budget, suppress end of think token
-            if output_length < scheduler_output.reasoning_budget:
-                logits[i, think_end_token_id] = float('-inf')
-                logits[i, 151645] = float('-inf') # EOS token
-
-            # case 2: If output length is equal to reasoning budget, set the logit of the end of think token to the original value
-            elif output_length <= scheduler_output.reasoning_budget:
-                logits[i, :].fill_(float("-inf"))
-                logits[i, think_end_token_id] = 1.0
-
+            for i in at_budget_indices:
+                logits[i] = float('-inf')
+                logits[i, THINK_END_TOKEN] = 1.0
+        
+        else:
+            # For larger modifications, use vectorized operations
+            device = logits.device
             
-            elif think_end_token_id in req_state.output_token_ids[scheduler_output.reasoning_budget+1:]:
-                logger.info(f"option 3: req {req_id} {req_state.output_token_ids[scheduler_output.reasoning_budget+1:]}")
-
+            if under_budget_indices:
+                # Convert to tensor once for vectorized operations
+                under_tensor = torch.tensor(under_budget_indices, device=device, dtype=torch.long)
+                suppress_tensor = torch.tensor(SUPPRESS_TOKENS, device=device, dtype=torch.long)
+                
+                # Vectorized suppression
+                logits[under_tensor[:, None], suppress_tensor] = float('-inf')
+            
+            if at_budget_indices:
+                at_tensor = torch.tensor(at_budget_indices, device=device, dtype=torch.long)
+                
+                # Vectorized forcing
+                logits[at_tensor] = float('-inf')
+                logits[at_tensor, THINK_END_TOKEN] = 1.0
 
     def apply_grammar_bitmask(
         self,
@@ -1437,8 +1465,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         if scheduler_output.grammar_bitmask is not None:
             self.apply_grammar_bitmask(scheduler_output, logits)
 
-        if scheduler_output.reasoning_budget > 0:
-            self.apply_reasoning_bitmask(scheduler_output, logits)
+        # if scheduler_output.reasoning_budget > 0:
+        self.apply_reasoning_bitmask(scheduler_output, logits)
 
         # Sample the next token and get logprobs if needed.
         sampling_metadata = self.input_batch.sampling_metadata
