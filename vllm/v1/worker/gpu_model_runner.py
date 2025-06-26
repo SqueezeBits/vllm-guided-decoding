@@ -1112,42 +1112,22 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 under_budget_indices.append(i)
             elif output_length == REASONING_BUDGET:
                 at_budget_indices.append(i)
-        
+
         # Early return if no modifications needed
         if not under_budget_indices and not at_budget_indices:
             return
         
-        # Choose strategy based on batch characteristics
-        total_modifications = len(under_budget_indices) + len(at_budget_indices)
+        # Apply reasoning bitmask using vectorized operations
+        if under_budget_indices:
+            # Suppress reasoning tokens for under-budget sequences
+            # Use tensor broadcasting: under_budget_indices[:, None] creates proper shape for broadcasting
+            under_tensor = torch.tensor(under_budget_indices, device=logits.device, dtype=torch.long)
+            logits[under_tensor[:, None], SUPPRESS_TOKENS] = float('-inf')
         
-        # For small modifications, use direct indexing (lowest overhead)
-        if total_modifications <= 4:
-            # Direct indexing - fastest for small batches
-            for i in under_budget_indices:
-                logits[i, SUPPRESS_TOKENS] = float('-inf')
-            
-            for i in at_budget_indices:
-                logits[i] = float('-inf')
-                logits[i, THINK_END_TOKEN] = 1.0
-        
-        else:
-            # For larger modifications, use vectorized operations
-            device = logits.device
-            
-            if under_budget_indices:
-                # Convert to tensor once for vectorized operations
-                under_tensor = torch.tensor(under_budget_indices, device=device, dtype=torch.long)
-                suppress_tensor = torch.tensor(SUPPRESS_TOKENS, device=device, dtype=torch.long)
-                
-                # Vectorized suppression
-                logits[under_tensor[:, None], suppress_tensor] = float('-inf')
-            
-            if at_budget_indices:
-                at_tensor = torch.tensor(at_budget_indices, device=device, dtype=torch.long)
-                
-                # Vectorized forcing
-                logits[at_tensor] = float('-inf')
-                logits[at_tensor, THINK_END_TOKEN] = 1.0
+        if at_budget_indices:
+            # Force end-of-thinking for at-budget sequences
+            logits[at_budget_indices] = float('-inf')
+            logits[at_budget_indices, THINK_END_TOKEN] = 1.0
 
     def apply_grammar_bitmask(
         self,
