@@ -66,6 +66,7 @@ from vllm.v1.utils import bind_kv_cache
 from vllm.v1.worker.block_table import BlockTable
 from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
+from vllm.envs import REASONING_BUDGET
 
 from .utils import (gather_mm_placeholders, initialize_kv_cache_for_kv_sharing,
                     sanity_check_mm_encoder_outputs, scatter_mm_placeholders)
@@ -1094,7 +1095,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         Performance-optimized with adaptive strategy based on batch characteristics.
         """
         # Constants
-        REASONING_BUDGET = 301
         THINK_END_TOKEN = 151668
         SUPPRESS_TOKENS = [151668, 151645, 151643]  # think_end, eos, stop
         

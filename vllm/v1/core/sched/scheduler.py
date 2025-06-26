@@ -582,12 +582,6 @@ class Scheduler(SchedulerInterface):
             free_encoder_input_ids=self.encoder_cache_manager.get_freed_ids(),
             structured_output_request_ids=structured_output_request_ids,
             grammar_bitmask=grammar_bitmask,
-            # reasoning_budget=REASONING_BUDGET,
-            # think_end_token_id=(
-            #     self.structured_output_manager.reasoner.think_end_token_id 
-            #     if isinstance(self.structured_output_manager.reasoner, Qwen3ReasoningParser) 
-            #     else None
-            # ),
         )
 
         # NOTE(Kuntai): this function is designed for multiple purposes:

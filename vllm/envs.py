@@ -921,7 +921,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     lambda: bool(int(os.getenv("VLLM_COMPUTE_NANS_IN_LOGITS", "0"))),
     # Control the reasoning budget for the vLLM server.
     "REASONING_BUDGET":
-    lambda: int(os.getenv("REASONING_BUDGET", "0")),
+    lambda: int(os.getenv("REASONING_BUDGET", "-1")),
 }
 
 # --8<-- [end:env-vars-definition]
