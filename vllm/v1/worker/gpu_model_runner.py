@@ -1088,11 +1088,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self,
         scheduler_output: "SchedulerOutput",
         logits: torch.Tensor,
+        spec_decode_metadata: Optional[SpecDecodeMetadata] = None,
     ):
         """
         Apply reasoning bitmask to prevent ending thinking too early.
-        
-        Performance-optimized with adaptive strategy based on batch characteristics.
+        Supports both regular and speculative decoding scenarios.
         """
         # Constants
         THINK_END_TOKEN = 151668
@@ -1102,32 +1102,61 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         if not self.input_batch.req_ids:
             return
         
-        # Collect indices efficiently in single pass
-        under_budget_indices = []
-        at_budget_indices = []
+        # Collect logit indices that need masking
+        under_budget_logit_indices = []
+        at_budget_logit_indices = []
         
-        for i, req_id in enumerate(self.input_batch.req_ids):
-            output_length = len(self.requests[req_id].output_token_ids)
-            if output_length < REASONING_BUDGET:
-                under_budget_indices.append(i)
-            elif output_length == REASONING_BUDGET:
-                at_budget_indices.append(i)
-
-        # Early return if no modifications needed
-        if not under_budget_indices and not at_budget_indices:
-            return
+        for req_idx, req_id in enumerate(self.input_batch.req_ids):
+            # output_length = len(self.requests[req_id].output_token_ids)
+            output_length = self.requests[req_id].num_computed_tokens - self.requests[req_id].num_prompt_tokens
+            
+            if spec_decode_metadata is None:
+                # Regular decoding: 1:1 mapping between request and logit indices
+                if output_length < REASONING_BUDGET:
+                    under_budget_logit_indices.append(req_idx)
+                elif output_length == REASONING_BUDGET:
+                    # logger.info(f"in reasoning_mask({req_id}): len({len(self.requests[req_id].output_token_ids)}) {self.requests[req_id].output_token_ids}")
+                    at_budget_logit_indices.append(req_idx)
+            else:
+                # Speculative decoding: each draft token has its own position
+                num_draft_tokens = spec_decode_metadata.num_draft_tokens[req_idx]
+                target_logits = spec_decode_metadata.target_logits_indices
+                bonus_logit = spec_decode_metadata.bonus_logits_indices[req_idx].item()
+                
+                # Calculate target logit indices for this request
+                target_start = sum(spec_decode_metadata.num_draft_tokens[:req_idx])
+                target_end = target_start + num_draft_tokens
+                req_target_logits = target_logits[target_start:target_end]
+                
+                # Apply masking to each draft token based on its position
+                for draft_idx, logit_idx in enumerate(req_target_logits):
+                    draft_position = output_length + draft_idx
+                    if draft_position < REASONING_BUDGET:
+                        under_budget_logit_indices.append(logit_idx.item())
+                    elif draft_position == REASONING_BUDGET:
+                        logger.info(f"In reasoning_mask SPECDEC({req_id}): len({len(self.requests[req_id].output_token_ids)}) {self.requests[req_id].output_token_ids}")
+                        self.is_print = True
+                        at_budget_logit_indices.append(logit_idx.item())
+                
+                # Apply masking to bonus token (position after all draft tokens)
+                bonus_position = output_length + num_draft_tokens
+                if bonus_position < REASONING_BUDGET:
+                    under_budget_logit_indices.append(bonus_logit)
+                elif bonus_position == REASONING_BUDGET:
+                    logger.info(f"In reasoning_mask SPECDEC_BONUS({req_id}): len({len(self.requests[req_id].output_token_ids)}) {self.requests[req_id].output_token_ids}")
+                    at_budget_logit_indices.append(bonus_logit)
         
-        # Apply reasoning bitmask using vectorized operations
-        if under_budget_indices:
-            # Suppress reasoning tokens for under-budget sequences
-            # Use tensor broadcasting: under_budget_indices[:, None] creates proper shape for broadcasting
-            under_tensor = torch.tensor(under_budget_indices, device=logits.device, dtype=torch.long)
-            logits[under_tensor[:, None], SUPPRESS_TOKENS] = float('-inf')
+        # Apply masks
+        if under_budget_logit_indices:
+            # Use advanced indexing to modify original logits tensor
+            indices = torch.tensor(under_budget_logit_indices, device=logits.device)
+            # Use broadcasting to set all suppress_tokens for all indices
+            logits[indices[:, None], SUPPRESS_TOKENS] = float('-inf')
         
-        if at_budget_indices:
-            # Force end-of-thinking for at-budget sequences
-            logits[at_budget_indices] = float('-inf')
-            logits[at_budget_indices, THINK_END_TOKEN] = 1.0
+        if at_budget_logit_indices:
+            logits[at_budget_logit_indices] = float('-inf')
+            logits[at_budget_logit_indices, THINK_END_TOKEN] = 1.0
+            logger.info(f"I")
 
     def apply_grammar_bitmask(
         self,
@@ -1445,8 +1474,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         if scheduler_output.grammar_bitmask is not None:
             self.apply_grammar_bitmask(scheduler_output, logits)
 
-        # if scheduler_output.reasoning_budget > 0:
-        self.apply_reasoning_bitmask(scheduler_output, logits)
+        # Apply reasoning bitmask with spec decode support
+        self.apply_reasoning_bitmask(scheduler_output, logits, spec_decode_metadata)
 
         # Sample the next token and get logprobs if needed.
         sampling_metadata = self.input_batch.sampling_metadata
@@ -1480,6 +1509,36 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 sampling_metadata,
             )
             sampler_output.sampled_token_ids = output_token_ids
+        # is_print = False
+        # for output_token_ids in sampling_metadata.output_token_ids:
+        #     if REASONING_BUDGET-3 <= len(output_token_ids) <= REASONING_BUDGET:
+        #         is_print = True
+        #         break
+        # if is_print and logits.device.type == "cuda" and logits.device.index == 0:
+        #     lengths =[len(ids) for ids in sampling_metadata.output_token_ids]
+        #     logger.info(self.input_batch.req_id_to_index)
+        #     logger.info(spec_decode_metadata)
+        #     logger.info(sampler_output.sampled_token_ids)
+        #     logger.info(lengths)
+        # for i, sample_token_id in enumerate(sampler_output.sampled_token_ids):
+        #     if 151668 in sample_token_id:
+        #         logger.info(spec_decode_metadata)
+        #         logger.info(sampler_output.sampled_token_ids)
+        #         logger.info(self.input_batch.req_id_to_index)
+        #         logger.info(f"in model runner({i}): len({len(sampling_metadata.output_token_ids[0])}) {sampling_metadata.output_token_ids}")
+        #     elif self.is_print:
+        #         logger.info(spec_decode_metadata)
+        #         logger.info(sampler_output.sampled_token_ids)
+        #         logger.info(self.input_batch.req_id_to_index)
+        #         logger.info(f"is print ({i}): len({len(sampling_metadata.output_token_ids[0])}) {sampling_metadata.output_token_ids}")
+        #         logger.info(f"{logits[:,151665:151670]}")
+        # if logits.device.type == "cuda" and logits.device.index == 0:
+        #     lengths =[len(ids) for ids in sampling_metadata.output_token_ids]
+        #     logger.info(self.input_batch.req_id_to_index)
+        #     logger.info(spec_decode_metadata)
+        #     logger.info(sampler_output.sampled_token_ids)
+        #     logger.info(lengths)
+        
 
         num_nans_in_logits = {}
         if envs.VLLM_COMPUTE_NANS_IN_LOGITS:
