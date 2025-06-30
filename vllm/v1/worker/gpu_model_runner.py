@@ -85,6 +85,7 @@ else:
 
 logger = init_logger(__name__)
 
+logger.info(f"REASONING_BUDGET: {REASONING_BUDGET}")
 
 class GPUModelRunner(LoRAModelRunnerMixin):
 
@@ -1134,8 +1135,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     if draft_position < REASONING_BUDGET:
                         under_budget_logit_indices.append(logit_idx.item())
                     elif draft_position == REASONING_BUDGET:
-                        logger.info(f"In reasoning_mask SPECDEC({req_id}): len({len(self.requests[req_id].output_token_ids)}) {self.requests[req_id].output_token_ids}")
-                        self.is_print = True
                         at_budget_logit_indices.append(logit_idx.item())
                 
                 # Apply masking to bonus token (position after all draft tokens)
@@ -1143,7 +1142,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 if bonus_position < REASONING_BUDGET:
                     under_budget_logit_indices.append(bonus_logit)
                 elif bonus_position == REASONING_BUDGET:
-                    logger.info(f"In reasoning_mask SPECDEC_BONUS({req_id}): len({len(self.requests[req_id].output_token_ids)}) {self.requests[req_id].output_token_ids}")
+
                     at_budget_logit_indices.append(bonus_logit)
         
         # Apply masks
@@ -1156,7 +1155,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         if at_budget_logit_indices:
             logits[at_budget_logit_indices] = float('-inf')
             logits[at_budget_logit_indices, THINK_END_TOKEN] = 1.0
-            logger.info(f"I")
+
 
     def apply_grammar_bitmask(
         self,
