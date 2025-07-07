@@ -39,6 +39,27 @@ class MedusaProposer:
         target_hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> torch.Tensor:
+        # compute_indices = []
+        # for idx, output_token_ids in enumerate(sampling_metadata.output_token_ids):
+        #     if len(output_token_ids) != 0:
+        #         compute_indices.append(idx)
+
+        # blocks = self.model(target_hidden_states[compute_indices])
+        # logits = self.model.compute_logits(blocks, None)
+
+        # # Get draft tokens and transpose the result
+        # draft_tokens = [logit.argmax(dim=-1).tolist() for logit in logits]
+        # flatten_draft_tokens = [list(row) for row in zip(*draft_tokens)]
+        # output_token_ids = []
+        # for idx in range(target_hidden_states.shape[0]):
+        #     if idx in compute_indices:
+        #         output_token_ids.append(flatten_draft_tokens[compute_indices.index(idx)])
+        #     else:
+        #         output_token_ids.append([])
+
+        # return output_token_ids
+        #########################################################
+
         # Generate blocks and compute logits
         blocks = self.model(target_hidden_states)
         logits = self.model.compute_logits(blocks, None)

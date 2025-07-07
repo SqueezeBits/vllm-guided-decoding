@@ -1508,35 +1508,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 sampling_metadata,
             )
             sampler_output.sampled_token_ids = output_token_ids
-        # is_print = False
-        # for output_token_ids in sampling_metadata.output_token_ids:
-        #     if REASONING_BUDGET-3 <= len(output_token_ids) <= REASONING_BUDGET:
-        #         is_print = True
-        #         break
-        # if is_print and logits.device.type == "cuda" and logits.device.index == 0:
-        #     lengths =[len(ids) for ids in sampling_metadata.output_token_ids]
-        #     logger.info(self.input_batch.req_id_to_index)
-        #     logger.info(spec_decode_metadata)
-        #     logger.info(sampler_output.sampled_token_ids)
-        #     logger.info(lengths)
-        # for i, sample_token_id in enumerate(sampler_output.sampled_token_ids):
-        #     if 151668 in sample_token_id:
-        #         logger.info(spec_decode_metadata)
-        #         logger.info(sampler_output.sampled_token_ids)
-        #         logger.info(self.input_batch.req_id_to_index)
-        #         logger.info(f"in model runner({i}): len({len(sampling_metadata.output_token_ids[0])}) {sampling_metadata.output_token_ids}")
-        #     elif self.is_print:
-        #         logger.info(spec_decode_metadata)
-        #         logger.info(sampler_output.sampled_token_ids)
-        #         logger.info(self.input_batch.req_id_to_index)
-        #         logger.info(f"is print ({i}): len({len(sampling_metadata.output_token_ids[0])}) {sampling_metadata.output_token_ids}")
-        #         logger.info(f"{logits[:,151665:151670]}")
-        # if logits.device.type == "cuda" and logits.device.index == 0:
-        #     lengths =[len(ids) for ids in sampling_metadata.output_token_ids]
-        #     logger.info(self.input_batch.req_id_to_index)
-        #     logger.info(spec_decode_metadata)
-        #     logger.info(sampler_output.sampled_token_ids)
-        #     logger.info(lengths)
+
         
 
         num_nans_in_logits = {}
@@ -1598,25 +1570,28 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 valid_sampled_token_ids, sampling_metadata)
         elif self.speculative_config.method == "medusa":
             assert isinstance(self.drafter, MedusaProposer)
-            if max_gen_len == 1:
-                hidden_states = sample_hidden_states
+            if any([len(output_token_ids) == 0 for output_token_ids in sampling_metadata.output_token_ids]):
+                spec_token_ids = [[] for _ in range(len(self.input_batch.req_ids))]
             else:
-                indices = []
-                offset = 0
-                for num_draft, tokens in zip(
-                        spec_decode_metadata.num_draft_tokens,
-                        valid_sampled_token_ids):
-                    indices.append(offset + len(tokens) - 1)
-                    offset += num_draft + 1
+                if max_gen_len == 1:
+                    hidden_states = sample_hidden_states
+                else:
+                    indices = []
+                    offset = 0
+                    for num_draft, tokens in zip(
+                            spec_decode_metadata.num_draft_tokens,
+                            valid_sampled_token_ids):
+                        indices.append(offset + len(tokens) - 1)
+                        offset += num_draft + 1
 
-                indices = torch.tensor(indices,
-                                       device=sample_hidden_states.device)
-                hidden_states = sample_hidden_states[indices]
+                    indices = torch.tensor(indices,
+                                        device=sample_hidden_states.device)
+                    hidden_states = sample_hidden_states[indices]
 
-            spec_token_ids = self.drafter.propose(
-                target_hidden_states=hidden_states,
-                sampling_metadata=sampling_metadata,
-            )
+                spec_token_ids = self.drafter.propose(
+                    target_hidden_states=hidden_states,
+                    sampling_metadata=sampling_metadata,
+                )
         elif self.speculative_config.use_eagle():
             assert isinstance(self.drafter, EagleProposer)
             # TODO(woosuk): Refactor the loop.
