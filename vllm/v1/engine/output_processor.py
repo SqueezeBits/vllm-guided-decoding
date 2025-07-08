@@ -412,6 +412,7 @@ class OutputProcessor:
                     kv_transfer_params, num_cached_tokens):
                 if req_state.queue is not None:
                     # AsyncLLM: put into queue for handling by generate().
+                    request_output.stats = req_state.stats
                     req_state.queue.put(request_output)
                 else:
                     # LLMEngine: return list of RequestOutputs.

@@ -24,6 +24,7 @@ from vllm.sampling_params import (BeamSearchParams, GuidedDecodingParams,
                                   RequestOutputKind, SamplingParams)
 from vllm.sequence import Logprob
 from vllm.utils import random_uuid, resolve_obj_by_qualname
+from vllm.v1.metrics.stats import RequestStateStats
 
 logger = init_logger(__name__)
 
@@ -1471,6 +1472,7 @@ class ChatCompletionResponse(OpenAIBaseModel):
     prompt_logprobs: Optional[list[Optional[dict[int, Logprob]]]] = None
     kv_transfer_params: Optional[dict[str, Any]] = Field(
         default=None, description="KVTransfer parameters.")
+    metrics: Optional[RequestStateStats] = None
 
 
 class DeltaMessage(OpenAIBaseModel):

@@ -1572,6 +1572,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             assert isinstance(self.drafter, MedusaProposer)
             if any([len(output_token_ids) == 0 for output_token_ids in sampling_metadata.output_token_ids]):
                 spec_token_ids = [[] for _ in range(len(self.input_batch.req_ids))]
+                logger.info(f"requests: {len(self.input_batch.req_ids)}, num_scheduled_tokens: {num_scheduled_tokens}")
             else:
                 if max_gen_len == 1:
                     hidden_states = sample_hidden_states

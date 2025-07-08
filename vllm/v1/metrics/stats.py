@@ -63,6 +63,7 @@ class RequestStateStats:
     scheduled_ts: float = 0.0
     first_token_ts: float = 0.0
     last_token_ts: float = 0.0
+    token_timestamps: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -127,6 +128,7 @@ class IterationStats:
             tpot = engine_core_timestamp - req_stats.last_token_ts
             self.time_per_output_tokens_iter.append(tpot)
 
+        req_stats.token_timestamps.append(engine_core_timestamp)
         req_stats.last_token_ts = engine_core_timestamp
 
     def update_from_events(self, req_id: str, events: list["EngineCoreEvent"],
