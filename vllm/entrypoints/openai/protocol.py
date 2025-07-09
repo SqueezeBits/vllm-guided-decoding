@@ -1497,6 +1497,7 @@ class ChatCompletionStreamResponse(OpenAIBaseModel):
     model: str
     choices: list[ChatCompletionResponseStreamChoice]
     usage: Optional[UsageInfo] = Field(default=None)
+    metrics: Optional[RequestStateStats] = None
 
 
 class TranscriptionResponseStreamChoice(OpenAIBaseModel):

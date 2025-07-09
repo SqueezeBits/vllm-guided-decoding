@@ -894,7 +894,8 @@ class OpenAIServingChat(OpenAIServing):
                     created=created_time,
                     choices=[],
                     model=model_name,
-                    usage=final_usage)
+                    usage=final_usage,
+                    metrics=res.stats)
                 final_usage_data = (final_usage_chunk.model_dump_json(
                     exclude_unset=True, exclude_none=True))
                 yield f"data: {final_usage_data}\n\n"
